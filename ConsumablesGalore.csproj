@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>ConsumablesGalore</RootNamespace>
+    <AssemblyName>MusicManiac-ConsumablesGalore</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <OutputType>Library</OutputType>
+    <Version>2.0.0</Version>
+    <!-- Produces a single, clean mod folder: bin\Release\ConsumablesGalore\ -->
+    <OutputPath>bin\$(Configuration)\ConsumablesGalore\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- We include the data files explicitly below, so disable the Web SDK's implicit content globbing -->
+    <EnableDefaultContentItems>false</EnableDefaultContentItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SPTarkov.Common" Version="4.0.13" />
+    <PackageReference Include="SPTarkov.DI" Version="4.0.13" />
+    <PackageReference Include="SPTarkov.Server.Core" Version="4.0.13" />
+  </ItemGroup>
+
+  <!-- Ship the data files alongside the compiled mod -->
+  <ItemGroup>
+    <Content Include="items\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="config\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
