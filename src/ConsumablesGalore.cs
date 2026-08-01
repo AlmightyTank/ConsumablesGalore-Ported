@@ -6,6 +6,7 @@ using SPTarkov.Server.Core.Helpers;
 using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
+using SPTarkov.Server.Core.Models.Enums;
 using SPTarkov.Server.Core.Models.Spt.Mod;
 using SPTarkov.Server.Core.Models.Utils;
 using SPTarkov.Server.Core.Servers;
@@ -59,6 +60,42 @@ public class ConsumablesGalore(
             return Task.CompletedTask;
         }
 
+        LoadItemsFromFolder(itemsDir);
+
+        logger.Success($"[{ModName}] finished loading");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Optional extension point for other mods: loads an additional folder of item definitions
+    /// through the same pipeline as Consumables Galore's own items/ folder (clone, buffs, trader,
+    /// quest hookups, spawns). Runs whenever it's called, so give your mod a later
+    /// <see cref="OnLoadOrder"/> priority than Consumables Galore's
+    /// (<c>OnLoadOrder.PostDBModLoader + 1</c>) to have it run after the normal items/ folder.
+    /// Pass your own assembly so the folder is resolved relative to your mod, not this one.
+    /// </summary>
+    /// <param name="callingAssembly">Your mod's assembly, e.g. <see cref="Assembly.GetExecutingAssembly"/>.</param>
+    /// <param name="subFolder">Folder name (relative to your mod's root) to scan for *.json item definitions.</param>
+    public Task LoadAdditionalItems(Assembly callingAssembly, string subFolder = "items")
+    {
+        var callingModPath = modHelper.GetAbsolutePathToModFolder(callingAssembly);
+        var itemsDir = System.IO.Path.Combine(callingModPath, subFolder);
+
+        if (!Directory.Exists(itemsDir))
+        {
+            logger.Warning($"[{ModName}] Additional items folder not found at {itemsDir}, nothing loaded for {callingAssembly.GetName().Name}");
+            return Task.CompletedTask;
+        }
+
+        logger.Info($"[{ModName}] Loading additional items for {callingAssembly.GetName().Name} from {itemsDir}");
+        LoadItemsFromFolder(itemsDir);
+        logger.Success($"[{ModName}] finished loading additional items for {callingAssembly.GetName().Name}");
+
+        return Task.CompletedTask;
+    }
+
+    private void LoadItemsFromFolder(string itemsDir)
+    {
         foreach (var file in Directory.GetFiles(itemsDir, "*.json", SearchOption.AllDirectories))
         {
             var fileName = System.IO.Path.GetFileName(file);
@@ -77,9 +114,6 @@ public class ConsumablesGalore(
                 logger.Error($"[{ModName}] Failed to parse {fileName}, item will not be loaded: {ex.Message}");
             }
         }
-
-        logger.Success($"[{ModName}] finished loading");
-        return Task.CompletedTask;
     }
 
     private void LoadConsumable(ConsumableItemConfig itemConfig)
@@ -151,6 +185,26 @@ public class ConsumablesGalore(
         if (itemConfig.Trader is not null)
         {
             AddToTrader(tables.Traders, newId, itemConfig.Trader);
+
+            if (itemConfig.IncludeInQuestAssortAsOrigin)
+            {
+                AddToQuestAssort(tables.Traders, itemConfig.Trader.TraderId, origin, newId);
+            }
+
+            if (itemConfig.Trader.QuestUnlock is not null)
+            {
+                AddQuestAssortUnlock(tables.Traders, itemConfig.Trader.TraderId, newId, itemConfig.Trader.QuestUnlock);
+            }
+        }
+
+        if (itemConfig.IncludeInQuestRewardsAsOrigin)
+        {
+            AddToQuestRewards(tables.Templates.Quests, origin, newId);
+        }
+
+        if (itemConfig.QuestReward is not null)
+        {
+            AddQuestReward(tables.Templates.Quests, newId, itemConfig.QuestReward);
         }
 
         if (itemConfig.Craft is not null)
@@ -250,6 +304,163 @@ public class ConsumablesGalore(
         ];
 
         trader.Assort.LoyalLevelItems[newId] = traderConfig.LoyaltyReq;
+    }
+
+    private void AddToQuestAssort(Dictionary<MongoId, Trader> traders, MongoId traderId, MongoId origin, MongoId newId)
+    {
+        if (!traders.TryGetValue(traderId, out var trader))
+        {
+            logger.Warning($"[{ModName}] Trader {traderId} not found, {newId} will not get quest assort unlocks");
+            return;
+        }
+
+        var originAssortIds = trader.Assort.Items
+            .Where(item => item.Template == origin)
+            .Select(item => item.Id)
+            .ToHashSet();
+
+        if (originAssortIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (state, unlocks) in trader.QuestAssort)
+        {
+            var lockingQuestId = unlocks
+                .Where(unlock => originAssortIds.Contains(unlock.Key))
+                .Select(unlock => (MongoId?)unlock.Value)
+                .FirstOrDefault();
+
+            if (lockingQuestId is not { } questId)
+            {
+                continue;
+            }
+
+            unlocks[newId] = questId;
+
+            if (_debug)
+            {
+                logger.Info($"[{ModName}] Locking {newId} behind quest {questId} ({state}) to match {origin}");
+            }
+        }
+    }
+
+    private void AddQuestAssortUnlock(Dictionary<MongoId, Trader> traders, MongoId traderId, MongoId newId, QuestAssortUnlockConfig unlockConfig)
+    {
+        if (!traders.TryGetValue(traderId, out var trader))
+        {
+            logger.Warning($"[{ModName}] Trader {traderId} not found, {newId} will not get a quest assort unlock");
+            return;
+        }
+
+        var state = unlockConfig.State.ToLowerInvariant();
+        if (!trader.QuestAssort.TryGetValue(state, out var unlocks))
+        {
+            unlocks = new Dictionary<MongoId, MongoId>();
+            trader.QuestAssort[state] = unlocks;
+        }
+
+        unlocks[newId] = unlockConfig.QuestId;
+
+        if (_debug)
+        {
+            logger.Info($"[{ModName}] Locking {newId} behind quest {unlockConfig.QuestId} ({state})");
+        }
+    }
+
+    private void AddToQuestRewards(Dictionary<MongoId, Quest> quests, MongoId origin, MongoId newId)
+    {
+        foreach (var quest in quests.Values)
+        {
+            if (quest.Rewards is null)
+            {
+                continue;
+            }
+
+            foreach (var rewards in quest.Rewards.Values)
+            {
+                var originRewards = rewards
+                    .Where(reward => reward.Type == RewardType.Item && reward.Items is { Count: 1 })
+                    .Where(reward => reward.Items![0].Template == origin)
+                    .ToList();
+
+                foreach (var originReward in originRewards)
+                {
+                    var originItem = originReward.Items![0];
+                    var newItemId = new MongoId();
+
+                    rewards.Add(new Reward
+                    {
+                        Value = originReward.Value,
+                        Id = new MongoId(),
+                        Type = RewardType.Item,
+                        Index = rewards.Count,
+                        Target = newItemId.ToString(),
+                        Items = [
+                            new Item
+                            {
+                                Id = newItemId,
+                                Template = newId,
+                                ParentId = originItem.ParentId,
+                                SlotId = originItem.SlotId,
+                                Upd = originItem.Upd is null ? null : new Upd { StackObjectsCount = originItem.Upd.StackObjectsCount },
+                            },
+                        ],
+                        LoyaltyLevel = originReward.LoyaltyLevel,
+                        FindInRaid = originReward.FindInRaid,
+                        GameMode = originReward.GameMode,
+                        AvailableInGameEditions = originReward.AvailableInGameEditions,
+                    });
+
+                    if (_debug)
+                    {
+                        logger.Info($"[{ModName}] Adding {newId} as a reward on quest {quest.Id} ({quest.QuestName})");
+                    }
+                }
+            }
+        }
+    }
+
+    private void AddQuestReward(Dictionary<MongoId, Quest> quests, MongoId newId, QuestRewardConfig rewardConfig)
+    {
+        if (!quests.TryGetValue(rewardConfig.QuestId, out var quest))
+        {
+            logger.Warning($"[{ModName}] Quest {rewardConfig.QuestId} not found, {newId} will not be added as a reward");
+            return;
+        }
+
+        quest.Rewards ??= new Dictionary<string, List<Reward>>();
+        if (!quest.Rewards.TryGetValue(rewardConfig.State, out var rewards))
+        {
+            rewards = new List<Reward>();
+            quest.Rewards[rewardConfig.State] = rewards;
+        }
+
+        var newItemId = new MongoId();
+
+        rewards.Add(new Reward
+        {
+            Value = rewardConfig.Count,
+            Id = new MongoId(),
+            Type = RewardType.Item,
+            Index = rewards.Count,
+            Target = newItemId.ToString(),
+            Items = [
+                new Item
+                {
+                    Id = newItemId,
+                    Template = newId,
+                    ParentId = "hideout",
+                    SlotId = "hideout",
+                    Upd = new Upd { StackObjectsCount = rewardConfig.Count },
+                },
+            ],
+        });
+
+        if (_debug)
+        {
+            logger.Info($"[{ModName}] Adding {newId} as a {rewardConfig.State} reward on quest {rewardConfig.QuestId}");
+        }
     }
 
     private void AddSpawns(SPTarkov.Server.Core.Models.Spt.Server.Locations locations, MongoId origin, MongoId newId, double spawnWeight)

@@ -46,11 +46,52 @@ change several hex digits (keep it unique across all item files).
 | `effects_health`                | Hydration/energy etc. changes. Keys: `Health`, `Hydration`, `Energy`, `Radiation`, `Temperature`, `Poisoning`. |
 | `effects_damage`                | Negative side effects. Keys: `Pain`, `Contusion`, `HeavyBleeding`, `LightBleeding`, `Fracture`, `Intoxication`, `RadExposure`. |
 | `Buffs`                         | Stimulator buffs (array). `BuffType` and `SkillName` must be valid game values — copy from an existing file. |
-| `trader`                        | Sells the item. `traderId`, `loyaltyReq`, `price`, `amountForSale`. |
+| `trader`                        | Sells the item. `traderId`, `loyaltyReq`, `price`, `amountForSale`, optional `questUnlock`. |
 | `craft`                         | Hideout craft recipe. `_id` is its own unique 24-hex id; `endProduct` must equal the item `id`. |
 | `includeInSameQuestsAsOrigin`   | `true` = add the item as a valid handover/find target in any quest that uses the origin. |
+| `includeInQuestAssortAsOrigin`  | `true` = if the origin is quest-locked in `trader`'s assort (only purchasable after starting/completing/failing a quest), lock this item the same way. Requires `trader` to be set. |
+| `includeInQuestRewardsAsOrigin` | `true` = wherever a quest gives the origin item as a reward, also give this item as a reward (in addition to, not instead of, the origin). |
+| `questReward`                   | Gives this item as a reward on a **specific quest you name**, independent of the clone origin. `questId`, `state` (default `"Success"`), `count` (default `1`). |
 | `addSpawnsInSamePlacesAsOrigin` | `true` = spawn in loose/static loot wherever the origin spawns. |
 | `spawnWeightComparedToOrigin`   | Spawn chance relative to the origin (e.g. `0.5` = half as common). |
+
+### `trader.questUnlock` — lock the item's assort entry behind a specific quest
+
+Unlike `includeInQuestAssortAsOrigin` (which mirrors whatever quest already
+locks the origin), `questUnlock` locks this item behind **any quest you
+choose**, even one the origin has nothing to do with:
+
+```json
+"trader": {
+  "traderId": "54cb50c76803fa8b248b4571",
+  "loyaltyReq": 1,
+  "price": 5000,
+  "amountForSale": 5,
+  "questUnlock": {
+    "questId": "PUT_A_QUEST_ID_HERE",
+    "state": "started"
+  }
+}
+```
+
+`state` is `"started"`, `"success"`, or `"fail"` (case-insensitive) — matches
+the trader's `questassort.json` semantics: the item appears once the quest
+reaches that state.
+
+### `questReward` — give the item as a reward on a specific quest
+
+```json
+"questReward": {
+  "questId": "PUT_A_QUEST_ID_HERE",
+  "state": "Success",
+  "count": 3
+}
+```
+
+`state` matches the quest's internal reward-state key (`"Started"`,
+`"AvailableForStart"`, `"Success"`, `"Fail"`, etc.) — `"Success"` (reward on
+turn-in) is what you want in almost every case. The item is added alongside
+whatever else that quest already rewards; nothing existing is removed.
 
 ## Pricing rules (`fleaPrice` / `handBookPrice`)
 
@@ -84,3 +125,36 @@ change several hex digits (keep it unique across all item files).
 
 See any existing file such as `items/AdrenalinePlus.json` for a complete,
 working reference that uses every feature.
+
+## For other mod authors: adding items from your own mod
+
+If you're making an addon/patch mod and want your own item JSON files run
+through Consumables Galore's pipeline (clone, buffs, trader, quest hookups,
+spawns) without editing this mod's `items/` folder, inject `ConsumablesGalore`
+and call `LoadAdditionalItems` from your mod's `OnLoad`:
+
+```csharp
+[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 2)] // after Consumables Galore's own items/ folder
+public class YourAddonMod(ConsumablesGalore.ConsumablesGalore consumablesGalore) : IOnLoad
+{
+    public async Task OnLoad()
+    {
+        // Defaults to "items/" inside YOUR mod's own folder.
+        await consumablesGalore.LoadAdditionalItems(Assembly.GetExecutingAssembly());
+
+        // Or point it at a nested folder, e.g. following the WTT db/CustomItems/ convention:
+        await consumablesGalore.LoadAdditionalItems(
+            Assembly.GetExecutingAssembly(),
+            Path.Combine("db", "CustomItems", "Consumables"));
+    }
+}
+```
+
+- The folder is resolved relative to **your** mod's directory (via the assembly you pass in),
+  not Consumables Galore's.
+- Give your mod's `[Injectable]` a later `TypePriority` than
+  `OnLoadOrder.PostDBModLoader + 1` (Consumables Galore's own priority) so your items load
+  after the normal `items/` folder.
+- The subfolder argument can be nested (`Path.Combine("db", "CustomItems", "Consumables")`).
+  Keep your item `.json` files directly inside that folder — files in further subfolders
+  underneath it won't resolve correctly.

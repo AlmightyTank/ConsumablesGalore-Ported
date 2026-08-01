@@ -95,7 +95,17 @@
 		"traderId": "54cb57776803fa99248b456e",
 		"loyaltyReq": 3,
 		"price": 70000,
-		"amountForSale": 8
+		"amountForSale": 8,
+		"questUnlock": {
+			"questId": "5967733e86f774602332fc84",
+			"state": "success"
+		}
+	},
+
+	"questReward": {
+		"questId": "5967733e86f774602332fc84",
+		"state": "Success",
+		"count": 1
 	},
 
 	"craft": {

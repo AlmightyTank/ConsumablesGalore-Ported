@@ -38,6 +38,12 @@ public record ConsumableItemConfig
     [JsonPropertyName("includeInSameQuestsAsOrigin")]
     public bool IncludeInSameQuestsAsOrigin { get; set; }
 
+    [JsonPropertyName("includeInQuestAssortAsOrigin")]
+    public bool IncludeInQuestAssortAsOrigin { get; set; }
+
+    [JsonPropertyName("includeInQuestRewardsAsOrigin")]
+    public bool IncludeInQuestRewardsAsOrigin { get; set; }
+
     [JsonPropertyName("addSpawnsInSamePlacesAsOrigin")]
     public bool AddSpawnsInSamePlacesAsOrigin { get; set; }
 
@@ -68,6 +74,10 @@ public record ConsumableItemConfig
     [JsonPropertyName("trader")]
     public TraderSaleConfig? Trader { get; set; }
 
+    /// <summary>Adds this item as a reward on an arbitrary quest, independent of the clone origin.</summary>
+    [JsonPropertyName("questReward")]
+    public QuestRewardConfig? QuestReward { get; set; }
+
     [JsonPropertyName("craft")]
     public HideoutProduction? Craft { get; set; }
 }
@@ -86,4 +96,33 @@ public record TraderSaleConfig
 
     [JsonPropertyName("amountForSale")]
     public int AmountForSale { get; set; }
+
+    /// <summary>Locks this item's assort entry behind an arbitrary quest, independent of the clone origin.</summary>
+    [JsonPropertyName("questUnlock")]
+    public QuestAssortUnlockConfig? QuestUnlock { get; set; }
+}
+
+/// <summary>Locks a trader assort entry until a quest reaches a given state.</summary>
+public record QuestAssortUnlockConfig
+{
+    [JsonPropertyName("questId")]
+    public MongoId QuestId { get; set; }
+
+    /// <summary>"started", "success" or "fail" (case-insensitive).</summary>
+    [JsonPropertyName("state")]
+    public string State { get; set; } = "started";
+}
+
+/// <summary>Gives this item as an additional reward when a quest reaches a given state.</summary>
+public record QuestRewardConfig
+{
+    [JsonPropertyName("questId")]
+    public MongoId QuestId { get; set; }
+
+    /// <summary>"Started", "Success", "Fail", etc. - matches the quest's rewards dictionary keys.</summary>
+    [JsonPropertyName("state")]
+    public string State { get; set; } = "Success";
+
+    [JsonPropertyName("count")]
+    public double Count { get; set; } = 1;
 }
