@@ -24,7 +24,7 @@ namespace ConsumablesGalore;
 ///   - optionally sells it at a trader, adds a hideout craft, injects it into the
 ///     same quests as its origin, and spawns it wherever the origin spawns.
 /// </summary>
-[Injectable(TypePriority = OnLoadOrder.Preload + 1)]
+[Injectable(InjectionType.Singleton, TypePriority = OnLoadOrder.Preload + 1)]
 public class ConsumablesGalore(
     ISptLogger<ConsumablesGalore> logger,
     ModHelper modHelper,
