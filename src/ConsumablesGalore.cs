@@ -188,12 +188,12 @@ public class ConsumablesGalore(
 
             if (itemConfig.IncludeInQuestAssortAsOrigin)
             {
-                AddToQuestAssort(tables.Traders, itemConfig.Trader.TraderId, origin, newId);
+                AddToQuestAssort(tables.Traders, tables.Templates.Quests, itemConfig.Trader.TraderId, origin, newId);
             }
 
             if (itemConfig.Trader.QuestUnlock is not null)
             {
-                AddQuestAssortUnlock(tables.Traders, itemConfig.Trader.TraderId, newId, itemConfig.Trader.QuestUnlock);
+                AddQuestAssortUnlock(tables.Traders, tables.Templates.Quests, itemConfig.Trader.TraderId, newId, itemConfig.Trader.QuestUnlock);
             }
         }
 
@@ -306,7 +306,7 @@ public class ConsumablesGalore(
         trader.Assort.LoyalLevelItems[newId] = traderConfig.LoyaltyReq;
     }
 
-    private void AddToQuestAssort(Dictionary<MongoId, Trader> traders, MongoId traderId, MongoId origin, MongoId newId)
+    private void AddToQuestAssort(Dictionary<MongoId, Trader> traders, Dictionary<MongoId, Quest> quests, MongoId traderId, MongoId origin, MongoId newId)
     {
         if (!traders.TryGetValue(traderId, out var trader))
         {
@@ -324,7 +324,7 @@ public class ConsumablesGalore(
             return;
         }
 
-        foreach (var (state, unlocks) in trader.QuestAssort)
+        foreach (var unlocks in trader.QuestAssort.Values)
         {
             var lockingQuestId = unlocks
                 .Where(unlock => originAssortIds.Contains(unlock.Key))
@@ -340,12 +340,12 @@ public class ConsumablesGalore(
 
             if (_debug)
             {
-                logger.Info($"[{ModName}] Locking {newId} behind quest {questId} ({state}) to match {origin}");
+                logger.Info($"[{ModName}] Locking {newId} behind quest {questId} ({GetQuestName(quests, questId)})");
             }
         }
     }
 
-    private void AddQuestAssortUnlock(Dictionary<MongoId, Trader> traders, MongoId traderId, MongoId newId, QuestAssortUnlockConfig unlockConfig)
+    private void AddQuestAssortUnlock(Dictionary<MongoId, Trader> traders, Dictionary<MongoId, Quest> quests, MongoId traderId, MongoId newId, QuestAssortUnlockConfig unlockConfig)
     {
         if (!traders.TryGetValue(traderId, out var trader))
         {
@@ -364,8 +364,13 @@ public class ConsumablesGalore(
 
         if (_debug)
         {
-            logger.Info($"[{ModName}] Locking {newId} behind quest {unlockConfig.QuestId} ({state})");
+            logger.Info($"[{ModName}] Locking {newId} behind quest {unlockConfig.QuestId} ({GetQuestName(quests, unlockConfig.QuestId)})");
         }
+    }
+
+    private static string GetQuestName(Dictionary<MongoId, Quest> quests, MongoId questId)
+    {
+        return quests.TryGetValue(questId, out var quest) ? quest.QuestName ?? "unknown quest" : "unknown quest";
     }
 
     private void AddToQuestRewards(Dictionary<MongoId, Quest> quests, MongoId origin, MongoId newId)
@@ -414,7 +419,7 @@ public class ConsumablesGalore(
 
                     if (_debug)
                     {
-                        logger.Info($"[{ModName}] Adding {newId} as a reward on quest {quest.Id} ({quest.QuestName})");
+                        logger.Info($"[{ModName}] Adding {newId} to quest {quest.Id} ({quest.QuestName}) as a reward");
                     }
                 }
             }
@@ -459,7 +464,7 @@ public class ConsumablesGalore(
 
         if (_debug)
         {
-            logger.Info($"[{ModName}] Adding {newId} as a {rewardConfig.State} reward on quest {rewardConfig.QuestId}");
+            logger.Info($"[{ModName}] Adding {newId} to quest {rewardConfig.QuestId} ({quest.QuestName}) as a {rewardConfig.State} reward");
         }
     }
 
