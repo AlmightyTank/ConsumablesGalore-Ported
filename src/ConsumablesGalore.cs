@@ -1,33 +1,39 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Threading;
+using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
-using SPTarkov.Server.Core.Helpers;
+using SPTarkov.Server.Core.Helpers.Server;
 using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 using SPTarkov.Server.Core.Models.Enums;
 using SPTarkov.Server.Core.Models.Spt.Mod;
-using SPTarkov.Server.Core.Models.Utils;
-using SPTarkov.Server.Core.Servers;
-using SPTarkov.Server.Core.Services.Mod;
+using SPTarkov.Server.Core.Models.Spt.Tables;
+using SPTarkov.Server.Core.Services.Modding.Custom;
+using SPTarkov.Server.Core.Utils.Json;
 
 namespace ConsumablesGalore;
 
 /// <summary>
 /// Consumables Galore, ported from the original SPT 3.x TypeScript mod to the
-/// SPT 4.0 C# server API. On load it reads every items/*.json definition and:
+/// SPT 4.1 C# server API. On load it reads every items/*.json definition and:
 ///   - clones a vanilla item into a new custom consumable
 ///   - applies stimulator buffs, health/damage effects and pricing
 ///   - optionally sells it at a trader, adds a hideout craft, injects it into the
 ///     same quests as its origin, and spawns it wherever the origin spawns.
 /// </summary>
-[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 1)]
+[Injectable(TypePriority = OnLoadOrder.Preload + 1)]
 public class ConsumablesGalore(
     ISptLogger<ConsumablesGalore> logger,
     ModHelper modHelper,
     CustomItemService customItemService,
-    DatabaseServer databaseServer
+    TemplateTable templateTable,
+    TradersTable tradersTable,
+    GlobalTable globalTable,
+    LocationTable locationTable,
+    HideoutTable hideoutTable
 ) : IOnLoad
 {
     private const string ModName = "Consumables Galore";
@@ -43,7 +49,7 @@ public class ConsumablesGalore(
     private bool _debug;
     private bool _realDebug;
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         logger.Info($"[{ModName}] started loading");
 
@@ -60,7 +66,7 @@ public class ConsumablesGalore(
             return Task.CompletedTask;
         }
 
-        LoadItemsFromFolder(itemsDir);
+        LoadItemsFromFolder(itemsDir, cancellationToken);
 
         logger.Success($"[{ModName}] finished loading");
         return Task.CompletedTask;
@@ -71,12 +77,13 @@ public class ConsumablesGalore(
     /// through the same pipeline as Consumables Galore's own items/ folder (clone, buffs, trader,
     /// quest hookups, spawns). Runs whenever it's called, so give your mod a later
     /// <see cref="OnLoadOrder"/> priority than Consumables Galore's
-    /// (<c>OnLoadOrder.PostDBModLoader + 1</c>) to have it run after the normal items/ folder.
+    /// (<c>OnLoadOrder.Preload + 1</c>) to have it run after the normal items/ folder.
     /// Pass your own assembly so the folder is resolved relative to your mod, not this one.
     /// </summary>
     /// <param name="callingAssembly">Your mod's assembly, e.g. <see cref="Assembly.GetExecutingAssembly"/>.</param>
     /// <param name="subFolder">Folder name (relative to your mod's root) to scan for *.json item definitions.</param>
-    public Task LoadAdditionalItems(Assembly callingAssembly, string subFolder = "items")
+    /// <param name="cancellationToken">Token observed while scanning; pass your own <c>OnLoadAsync</c> token.</param>
+    public Task LoadAdditionalItems(Assembly callingAssembly, string subFolder = "items", CancellationToken cancellationToken = default)
     {
         var callingModPath = modHelper.GetAbsolutePathToModFolder(callingAssembly);
         var itemsDir = System.IO.Path.Combine(callingModPath, subFolder);
@@ -88,16 +95,18 @@ public class ConsumablesGalore(
         }
 
         logger.Info($"[{ModName}] Loading additional items for {callingAssembly.GetName().Name} from {itemsDir}");
-        LoadItemsFromFolder(itemsDir);
+        LoadItemsFromFolder(itemsDir, cancellationToken);
         logger.Success($"[{ModName}] finished loading additional items for {callingAssembly.GetName().Name}");
 
         return Task.CompletedTask;
     }
 
-    private void LoadItemsFromFolder(string itemsDir)
+    private void LoadItemsFromFolder(string itemsDir, CancellationToken cancellationToken)
     {
         foreach (var file in Directory.GetFiles(itemsDir, "*.json", SearchOption.AllDirectories))
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var fileName = System.IO.Path.GetFileName(file);
             if (_debug)
             {
@@ -118,19 +127,18 @@ public class ConsumablesGalore(
 
     private void LoadConsumable(ConsumableItemConfig itemConfig)
     {
-        var tables = databaseServer.GetTables();
         var origin = itemConfig.CloneOrigin;
         var newId = itemConfig.Id;
 
-        if (!tables.Templates.Items.TryGetValue(origin, out var originItem))
+        if (!templateTable.Items.TryGetValue(origin, out var originItem))
         {
             logger.Error($"[{ModName}] Clone origin {origin} not found in item db, skipping {newId}");
             return;
         }
 
         // Resolve the origin's flea/handbook base values for "asOriginal"/multiplier support
-        tables.Templates.Prices.TryGetValue(origin, out var originFleaPrice);
-        var handbookEntry = tables.Templates.Handbook.Items.FirstOrDefault(i => i.Id == origin);
+        templateTable.Prices.TryGetValue(origin, out var originFleaPrice);
+        var handbookEntry = templateTable.Handbook.Items.FirstOrDefault(i => i.Id == origin);
         var originHandbookPrice = handbookEntry?.Price;
 
         var fleaPrice = ResolvePrice(itemConfig.FleaPrice, originFleaPrice, originFleaPrice);
@@ -158,6 +166,7 @@ public class ConsumablesGalore(
             OverrideProperties = overrides,
             ParentId = originItem.Parent,
             NewId = newId,
+            NewItemName = BuildInternalItemName(itemConfig),
             FleaPriceRoubles = fleaPrice,
             HandbookPriceRoubles = handbookPrice,
             HandbookParentId = handbookEntry?.ParentId.ToString(),
@@ -169,47 +178,47 @@ public class ConsumablesGalore(
         // Register stimulator buffs against the new item's buff key
         if (itemConfig.Buffs is not null)
         {
-            tables.Globals.Configuration.Health.Effects.Stimulator.Buffs[newId] = itemConfig.Buffs;
+            globalTable.Configuration.Health.Effects.Stimulator.Buffs[newId] = itemConfig.Buffs;
         }
 
         if (itemConfig.IncludeInSameQuestsAsOrigin)
         {
-            AddToOriginQuests(tables.Templates.Quests, origin, newId);
+            AddToOriginQuests(templateTable.Quests, origin, newId);
         }
 
         if (itemConfig.AddSpawnsInSamePlacesAsOrigin)
         {
-            AddSpawns(tables.Locations, origin, newId, itemConfig.SpawnWeightComparedToOrigin);
+            AddSpawns(locationTable, origin, newId, itemConfig.SpawnWeightComparedToOrigin);
         }
 
         if (itemConfig.Trader is not null)
         {
-            AddToTrader(tables.Traders, newId, itemConfig.Trader);
+            AddToTrader(tradersTable, newId, itemConfig.Trader);
 
             if (itemConfig.IncludeInQuestAssortAsOrigin)
             {
-                AddToQuestAssort(tables.Traders, tables.Templates.Quests, itemConfig.Trader.TraderId, origin, newId);
+                AddToQuestAssort(tradersTable, templateTable.Quests, itemConfig.Trader.TraderId, origin, newId);
             }
 
             if (itemConfig.Trader.QuestUnlock is not null)
             {
-                AddQuestAssortUnlock(tables.Traders, tables.Templates.Quests, itemConfig.Trader.TraderId, newId, itemConfig.Trader.QuestUnlock);
+                AddQuestAssortUnlock(tradersTable, templateTable.Quests, itemConfig.Trader.TraderId, newId, itemConfig.Trader.QuestUnlock);
             }
         }
 
         if (itemConfig.IncludeInQuestRewardsAsOrigin)
         {
-            AddToQuestRewards(tables.Templates.Quests, origin, newId);
+            AddToQuestRewards(templateTable.Quests, origin, newId);
         }
 
         if (itemConfig.QuestReward is not null)
         {
-            AddQuestReward(tables.Templates.Quests, newId, itemConfig.QuestReward);
+            AddQuestReward(templateTable.Quests, newId, itemConfig.QuestReward);
         }
 
         if (itemConfig.Craft is not null)
         {
-            tables.Hideout.Production.Recipes?.Add(itemConfig.Craft);
+            hideoutTable.Production.Recipes?.Add(itemConfig.Craft);
         }
     }
 
@@ -238,6 +247,19 @@ public class ConsumablesGalore(
         }
 
         return originValue ?? originFleaPrice;
+    }
+
+    /// <summary>
+    /// SPT 4.1 requires an internal (non-locale) name for cloned items. We don't have a
+    /// dedicated field for this in items/*.json, so derive a slug from the English locale
+    /// name, falling back to the new item's own id if no English name is set.
+    /// </summary>
+    private static string BuildInternalItemName(ConsumableItemConfig itemConfig)
+    {
+        var displayName = itemConfig.Locales.GetValueOrDefault("en")?.Name;
+        return string.IsNullOrWhiteSpace(displayName)
+            ? itemConfig.Id.ToString()
+            : displayName.Trim().ToLowerInvariant().Replace(' ', '_');
     }
 
     private void AddToOriginQuests(Dictionary<MongoId, Quest> quests, MongoId origin, MongoId newId)
@@ -407,7 +429,7 @@ public class ConsumablesGalore(
             Type = RewardType.AssortmentUnlock,
             Index = rewards.Count,
             Target = newId.ToString(),
-            TraderId = traderId,
+            TraderId = new StringOrInt(traderId.ToString(), null),
             LoyaltyLevel = loyaltyLevel,
             Items = [new Item { Id = assortItem.Id, Template = assortItem.Template }],
             IsHidden = false,
@@ -528,7 +550,7 @@ public class ConsumablesGalore(
         }
     }
 
-    private void AddSpawns(SPTarkov.Server.Core.Models.Spt.Server.Locations locations, MongoId origin, MongoId newId, double spawnWeight)
+    private void AddSpawns(LocationTable locations, MongoId origin, MongoId newId, double spawnWeight)
     {
         var dictionary = locations.GetDictionary();
         foreach (var mapName in SpawnMaps)
