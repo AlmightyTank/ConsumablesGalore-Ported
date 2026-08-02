@@ -324,7 +324,7 @@ public class ConsumablesGalore(
             return;
         }
 
-        foreach (var unlocks in trader.QuestAssort.Values)
+        foreach (var (state, unlocks) in trader.QuestAssort)
         {
             var lockingQuestId = unlocks
                 .Where(unlock => originAssortIds.Contains(unlock.Key))
@@ -342,6 +342,8 @@ public class ConsumablesGalore(
             {
                 logger.Info($"[{ModName}] Locking {newId} behind quest {questId} ({GetQuestName(quests, questId)})");
             }
+
+            AddAssortmentUnlockReward(quests, trader, traderId, newId, questId, state);
         }
     }
 
@@ -366,7 +368,65 @@ public class ConsumablesGalore(
         {
             logger.Info($"[{ModName}] Locking {newId} behind quest {unlockConfig.QuestId} ({GetQuestName(quests, unlockConfig.QuestId)})");
         }
+
+        AddAssortmentUnlockReward(quests, trader, traderId, newId, unlockConfig.QuestId, state);
     }
+
+    /// <summary>
+    /// Mirrors BSG's vanilla quest data: locking an assort entry behind a quest (trader.QuestAssort)
+    /// only controls when the item can actually be bought. To have the quest itself display
+    /// "unlocks trader assortment" in the client, the quest also needs an AssortmentUnlock reward
+    /// pointing at the same assort entry, loyalty level and trader.
+    /// </summary>
+    private void AddAssortmentUnlockReward(Dictionary<MongoId, Quest> quests, Trader trader, MongoId traderId, MongoId newId, MongoId questId, string assortState)
+    {
+        if (!quests.TryGetValue(questId, out var quest))
+        {
+            return;
+        }
+
+        var assortItem = trader.Assort.Items.FirstOrDefault(item => item.Id == newId);
+        if (assortItem is null)
+        {
+            return;
+        }
+
+        quest.Rewards ??= new Dictionary<string, List<Reward>>();
+        var rewardStateKey = ToQuestRewardStateKey(assortState);
+        if (!quest.Rewards.TryGetValue(rewardStateKey, out var rewards))
+        {
+            rewards = new List<Reward>();
+            quest.Rewards[rewardStateKey] = rewards;
+        }
+
+        trader.Assort.LoyalLevelItems.TryGetValue(newId, out var loyaltyLevel);
+
+        rewards.Add(new Reward
+        {
+            Id = new MongoId(),
+            Type = RewardType.AssortmentUnlock,
+            Index = rewards.Count,
+            Target = newId.ToString(),
+            TraderId = traderId,
+            LoyaltyLevel = loyaltyLevel,
+            Items = [new Item { Id = assortItem.Id, Template = assortItem.Template }],
+            IsHidden = false,
+            Unknown = false,
+        });
+
+        if (_debug)
+        {
+            logger.Info($"[{ModName}] Adding {newId} to quest {questId} ({GetQuestName(quests, questId)}) as an assortment unlock");
+        }
+    }
+
+    private static string ToQuestRewardStateKey(string assortState) => assortState.ToLowerInvariant() switch
+    {
+        "started" => "Started",
+        "success" => "Success",
+        "fail" => "Fail",
+        _ => "Success",
+    };
 
     private static string GetQuestName(Dictionary<MongoId, Quest> quests, MongoId questId)
     {
