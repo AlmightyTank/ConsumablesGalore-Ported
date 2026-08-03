@@ -134,18 +134,19 @@ spawns) without editing this mod's `items/` folder, inject `ConsumablesGalore`
 and call `LoadAdditionalItems` from your mod's `OnLoad`:
 
 ```csharp
-[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 2)] // after Consumables Galore's own items/ folder
+[Injectable(TypePriority = OnLoadOrder.Preload + 2)] // after Consumables Galore's own items/ folder
 public class YourAddonMod(ConsumablesGalore.ConsumablesGalore consumablesGalore) : IOnLoad
 {
-    public async Task OnLoad()
+    public async Task OnLoadAsync(CancellationToken cancellationToken)
     {
         // Defaults to "items/" inside YOUR mod's own folder.
-        await consumablesGalore.LoadAdditionalItems(Assembly.GetExecutingAssembly());
+        await consumablesGalore.LoadAdditionalItems(Assembly.GetExecutingAssembly(), cancellationToken: cancellationToken);
 
         // Or point it at a nested folder, e.g. following the WTT db/CustomItems/ convention:
         await consumablesGalore.LoadAdditionalItems(
             Assembly.GetExecutingAssembly(),
-            Path.Combine("db", "CustomItems", "Consumables"));
+            Path.Combine("db", "CustomItems", "Consumables"),
+            cancellationToken);
     }
 }
 ```
@@ -153,8 +154,10 @@ public class YourAddonMod(ConsumablesGalore.ConsumablesGalore consumablesGalore)
 - The folder is resolved relative to **your** mod's directory (via the assembly you pass in),
   not Consumables Galore's.
 - Give your mod's `[Injectable]` a later `TypePriority` than
-  `OnLoadOrder.PostDBModLoader + 1` (Consumables Galore's own priority) so your items load
-  after the normal `items/` folder.
+  `OnLoadOrder.Preload + 1` (Consumables Galore's own priority) so your items load
+  after the normal `items/` folder. `OnLoadOrder` is a static class of `int` constants
+  (`Preload = 100000`, `GameCallbacks = 200000`, etc.), not an enum — pick any value
+  greater than `100001` and less than the next stage you don't want to run before.
 - The subfolder argument can be nested (`Path.Combine("db", "CustomItems", "Consumables")`).
   Keep your item `.json` files directly inside that folder — files in further subfolders
   underneath it won't resolve correctly.
